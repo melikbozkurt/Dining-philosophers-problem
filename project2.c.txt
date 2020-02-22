@@ -1,0 +1,118 @@
+#include <unistd.h>
+#include <stdlib.h>
+#include <math.h>
+#include <sys/mman.h>
+#include <semaphore.h>
+#include <time.h>
+#define error(msg)\
+    do{perror(msg); exit(EXIT_FAILURE);} while(0)
+
+int uniDistribute(int rLow, int rHigh) {
+    double random = rand()/(1.0 + RAND_MAX); 
+    int range = rHigh - rLow + 1;
+    int randomScaled = (random * range) + rLow;
+    return randomScaled;
+}
+
+double expoDistribute(double l){
+  double z;                     
+  double expoValue;             
+  z = (double) uniDistribute(1, 100) / 101.0;
+  expoValue = -l * log(z);
+  return (int) expoValue;
+}
+
+typedef struct t {
+ int numPhsp;
+ int minThink;
+   int maxThink;
+   int minDine;
+   int maxDine;  
+   char* dst;
+   int num;
+   int i;
+   } workerTask;
+
+sem_t* dinQuota;
+sem_t* forks;
+
+void workThread(void *i) {
+    
+    struct timespec start;
+    struct timespec end;
+    double elapsed;
+    workerTask *a = ((workerTask *) i);
+	int thinkingTime = 0;
+	int diningTime = 0;
+	if(a->dst == "uniform") {
+		thinkingTime = uniDistribute(a->minThink, a->maxThink);
+		diningTime = uniDistribute(a->minDine, a->maxDine);
+	} else {
+		thinkingTime = expoDistribute((double) (a->minThink + a->maxThink) / 2);
+		diningTime = expoDistribute( (double) ((a->minDine + a->maxDine) / 2));
+	}
+clock_gettime(CLOCK_MONOTONIC, &start);
+	while(a->num > 0) {
+		usleep(thinkingTime*1000);
+		sem_wait(&dinQuota);
+		sem_wait(&forks[a->i]);
+		sem_wait(&forks[(a->i+1)%a->numPhsp]);
+		a->num--;
+		usleep(diningTime*1000);
+		sem_post(&forks[a->i]);
+		sem_post(&forks[(a->i+1)%a->numPhsp]);
+		sem_post(&dinQuota);
+	}
+	 clock_gettime(CLOCK_MONOTONIC, &end);
+	  elapsed = (end.tv_sec - start.tv_sec);
+    elapsed += (end.tv_nsec - start.tv_nsec) / 1000000000.0;
+    printf("Philosopher %d complete dining and he waited for %fms\n", a->i, elapsed);
+    free(a);
+    pthread_exit(NULL);
+}
+
+int main(int argc, char *argv[]) {
+	pid_t pid;
+	int i;
+	int numPhsp = atoi(argv[1]);
+  if(numPhsp>27 ||numPhsp%2==0){
+	    error("Number of philosophers can not be more than 27 or can not be odd number");
+	}
+	int minThink = atoi(argv[2]);
+	
+	int maxThink = atoi(argv[3]);
+	int minDine = atoi(argv[4]);
+	if(minThink<1 ||minDine<1){
+	    error("Minimum time can be 1ms");
+	}
+	int maxDine = atoi(argv[5]);
+	if(maxThink>60000 ||maxDine>60000){
+	    error("Maximum time can be 60ms");
+	}
+	char* probDist = argv[6];
+	int num = atoi(argv[7]);
+	int tid[numPhsp];
+	sem_t s[numPhsp];
+    forks = s;
+	
+    sem_init(&dinQuota, 0, numPhsp / 2);
+
+	for (i = 0; i <= numPhsp; i++) {
+		sem_init(&forks[i], 0, 1);
+	}
+
+	for (i = 0; i < numPhsp; ++i) {
+        workerTask* arg = (workerTask * ) malloc(sizeof(workerTask));
+        arg->dst = probDist;
+        arg->maxDine = maxDine;
+        arg->maxThink = maxThink;
+        arg->minDine = minDine;
+        arg->minThink = minThink;
+        arg->num = num;
+        arg->numPhsp = numPhsp;
+        arg->i = i;
+        pthread_create(&tid[i], NULL, &workThread, (void *)arg);
+    }
+
+	pthread_exit(NULL);
+}
